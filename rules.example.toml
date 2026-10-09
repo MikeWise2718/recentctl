@@ -1,0 +1,22 @@
+# recentctl rules — copy to  %USERPROFILE%\.config\recentctl\rules.toml  and edit.
+# Kept outside the repo on purpose: the list of private places is itself private.
+#
+# `recentctl list -r` shows what these select; `recentctl prune -r -y` removes them.
+# Patterns are case-insensitive. With * ? [ they are globs over the target path and the
+# entry's name (* crosses backslashes); without, a plain substring.
+
+# Anything not opened for this long goes. Ages: 90min, 12h, 30d, 6w, 1y. Remove to disable.
+max_age = "60d"
+
+# Always removed, whatever the age.
+private = [
+    'D:\Private\*',
+    '*\Bank statements\*',
+    '*\Videos\*',
+    'payslip',          # substring: matches any path or name containing it
+]
+
+# Never removed — wins over max_age, private and command-line filters.
+keep = [
+    'D:\Work\*',
+]

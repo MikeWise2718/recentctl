@@ -1,0 +1,39 @@
+[project]
+name = "recentctl"
+dynamic = ["version"]
+description = "Dump, count and prune Windows File Explorer's Recent list — and hide it while you share your screen"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Mike Wise" }]
+requires-python = ">=3.12"
+keywords = ["windows", "explorer", "recent-files", "privacy", "screen-sharing", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Topic :: Desktop Environment",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "pywin32>=306",
+    "rich>=13",
+    "rich-argparse>=1.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/MikeWise2718/recentctl"
+Issues = "https://github.com/MikeWise2718/recentctl/issues"
+
+[project.scripts]
+recentctl = "recentctl.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/recentctl/__init__.py"
