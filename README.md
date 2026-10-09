@@ -150,6 +150,11 @@ restarts Explorer so every window picks it up.
 - **Patterns** are case-insensitive. With `*`, `?` or `[` they are globs, and `*` also
   crosses backslashes, so `D:\Private\*` covers the whole tree. Without wildcards they match
   as a substring: `payslip` hits any path or name containing it.
+- **Quoting:** in PowerShell use `'single'` quotes. In cmd.exe use `"double"` quotes,
+  because cmd passes single quotes through literally. Since 0.3.1, recentctl strips a
+  matching pair of either kind itself.
+- **Substrings can over-match:** `-m pdata` also hits every path under `AppData`. Anchor
+  it with a backslash, as in `*\pdata*` or `\transfer\pdata`.
 - **Ages** are `90min`, `12h`, `30d`, `6w` or `1y`, counted from when the item was last
   opened.
 - `-m` and the age options combine with AND. For `prune -r`, entries the rules select are

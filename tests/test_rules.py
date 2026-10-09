@@ -73,3 +73,10 @@ def test_category_filter_selects_and_narrows():
     f = Filters(categories=["image", "video"])
     assert [e.name for e, _ in select([pic, vid, doc], f, None, union=False)] == ["p.JPG", "v.mp4"]
     assert [e.name for e, _ in select([pic, vid, doc], f, None, union=True)] == ["p.JPG", "v.mp4"]
+
+
+def test_cli_strips_cmd_style_quotes():
+    from recentctl.cli import _unquote
+    assert _unquote("'a*'") == "a*"
+    assert _unquote('"a*"') == "a*"
+    assert _unquote("it's") == "it's"

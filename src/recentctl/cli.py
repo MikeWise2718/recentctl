@@ -59,10 +59,17 @@ ages: 90min, 12h, 30d, 6w, 1y — counted from when the item was last opened.
 
 # ---------------------------------------------------------------- shared pieces
 
+def _unquote(pattern: str) -> str:
+    """cmd.exe passes single quotes through literally; no path contains them at both ends."""
+    if len(pattern) >= 2 and pattern[0] == pattern[-1] and pattern[0] in "'\"":
+        return pattern[1:-1]
+    return pattern
+
+
 def _filters(a: argparse.Namespace) -> Filters:
     try:
         return Filters(
-            patterns=a.match or [],
+            patterns=[_unquote(p) for p in a.match or []],
             older_than=parse_age(a.older_than) if a.older_than else None,
             newer_than=parse_age(a.newer_than) if a.newer_than else None,
             kinds=a.kind or [],
