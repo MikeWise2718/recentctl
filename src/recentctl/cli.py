@@ -17,7 +17,7 @@ from rich.table import Table
 from rich.text import Text
 from rich_argparse import RawDescriptionRichHelpFormatter
 
-from . import __version__, stats, store, switch, view
+from . import __version__, quick, stats, store, switch, view
 from .rules import DEFAULT_RULES, Filters, Rules, parse_age, select
 
 console = Console(highlight=False)
@@ -46,6 +46,9 @@ EXAMPLES = [
     ("recentctl stats -m D:\\Work\\*", "statistics for one tree only"),
     ("recentctl prune -ot 60d", "DRY RUN: entries not opened for 60 days"),
     ("recentctl prune -r -y", "apply the rules file for real"),
+    ("recentctl quick", "Quick access folders, pinned and frequent"),
+    ("recentctl prune -m *\\Private\\* -qa -y", "remove from Recent AND Quick access"),
+    ("recentctl prune -m *\\Private\\* -qo -ip -y", "Quick access only, unpinning too"),
     ("recentctl present on -f", "hide Recent + frequent folders for a screen share"),
     ("recentctl present off", "show them again"),
 ]
@@ -278,17 +281,117 @@ def cmd_stats(a: argparse.Namespace) -> int:
 
 # ---------------------------------------------------------------- prune
 
-def _log(entry: store.Entry, why: str) -> None:
+def _log(event: str, name: str, why: str, record: dict) -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     rec = {
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "event": "recent.removed",
-        "message": f"removed {entry.name}",
+        "event": event,
+        "message": f"removed {name}",
         "why": why,
-        **entry.as_dict(),
+        **record,
     }
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def _prune_recent(a: argparse.Namespace, filters: Filters, rules: Rules | None) -> int:
+    entries = _load()
+    rows = select(entries, filters, rules, union=True)
+    if not rows:
+        if not a.quiet:
+            console.print("[bold bright_green]✓ Recent: nothing to remove.[/]")
+        return 0
+    if not a.yes:
+        console.print(_table(rows, show_reason=True, title="Recent — would remove"))
+        console.print(Panel(
+            f"[bold gold1]DRY RUN[/] — would remove [bold deep_pink2]{len(rows)}[/] of "
+            f"[bold]{len(entries)}[/] Recent entries. Add [bold bright_cyan]-y[/] to do it.",
+            border_style="gold1", expand=False))
+        return 0
+    removed = failed = 0
+    for e, why in rows:
+        try:
+            store.remove(e)
+            _log("recent.removed", e.name, why, e.as_dict())
+            removed += 1
+        except OSError as exc:
+            failed += 1
+            console.print(f"[bold red]✗[/] could not remove [bright_cyan]{e.lnk.name}[/]: {exc}")
+    if not a.quiet or failed:
+        msg = f"[bold bright_green]✓ Recent: removed {removed}[/] of {len(entries)} entries"
+        if failed:
+            msg += f", [bold red]{failed} failed[/]"
+        console.print(msg)
+    return 1 if failed else 0
+
+
+def _quick_table(rows: list[tuple[quick.QuickItem, str]], title: str = "",
+                 show_reason: bool = True) -> Table:
+    t = Table(box=box.ROUNDED, header_style="bold white on dark_magenta",
+              border_style="magenta", title=title or None, title_style="bold bright_magenta",
+              pad_edge=False)
+    t.add_column("state", no_wrap=True)
+    t.add_column("name", overflow="fold", style="bold gold1")
+    t.add_column("folder", overflow="fold")
+    if show_reason:
+        t.add_column("why", overflow="fold", style="bold deep_pink2")
+    for it, why in rows:
+        state = (Text("📌 pinned", style="bold gold1") if it.pinned
+                 else Text("⟳ frequent", style="bright_cyan"))
+        head, _, tail = it.target.rstrip("\\").rpartition("\\")
+        folder = Text(head + "\\" if head else "", style="grey50")
+        folder.append(tail, style="gold1")
+        cells = [state, it.name, folder]
+        if show_reason:
+            cells.append(why)
+        t.add_row(*cells)
+    return t
+
+
+def _prune_quick(a: argparse.Namespace, filters: Filters, rules: Rules | None) -> int:
+    patterns = filters.patterns
+    if not patterns and rules is None:
+        console.print("[grey50]Quick access: skipped — it only takes -m patterns or -r "
+                      "(it has no ages or categories).[/]")
+        return 0
+
+    def choose(items):
+        picked, _ = quick.select(items, patterns, rules, a.include_pinned)
+        return picked
+
+    with console.status("[bright_magenta]Reading Quick access…[/]", spinner="dots"):
+        items = quick.load()
+    picked, skipped = quick.select(items, patterns, rules, a.include_pinned)
+    if skipped:
+        console.print(
+            f"[gold1]📌 {len(skipped)} pinned folder(s) match but are kept[/] — add "
+            "[bold bright_cyan]-ip[/] to unpin them: "
+            + ", ".join(f"[gold1]{s.target}[/]" for s in skipped))
+    if not picked:
+        if not a.quiet:
+            console.print("[bold bright_green]✓ Quick access: nothing to remove.[/]")
+        return 0
+    if not a.yes:
+        console.print(_quick_table(picked, title="Quick access — would remove"))
+        console.print(Panel(
+            f"[bold gold1]DRY RUN[/] — would remove [bold deep_pink2]{len(picked)}[/] of "
+            f"[bold]{len(items)}[/] Quick access folders. Windows promotes the next frequent "
+            "folder into each freed slot; with [bold bright_cyan]-y[/] recentctl keeps going "
+            "until no match is left.", border_style="gold1", expand=False))
+        return 0
+
+    def logged(it, why):
+        event = "quick.unpinned" if it.pinned else "quick.removed"
+        _log(event, it.name, why, it.as_dict())
+
+    with console.status("[bright_magenta]Removing from Quick access…[/]", spinner="dots"):
+        removed, failed = quick.prune(choose, logged)
+    if not a.quiet or failed:
+        msg = f"[bold bright_green]✓ Quick access: removed {removed}[/] folder(s)"
+        if failed:
+            msg += f", [bold red]{failed} failed[/]"
+        console.print(msg)
+    return 1 if failed else 0
 
 
 def cmd_prune(a: argparse.Namespace) -> int:
@@ -296,36 +399,46 @@ def cmd_prune(a: argparse.Namespace) -> int:
     rules = _rules(a)
     if not filters.selects_anything and rules is None:
         console.print("[bold red]✗[/] prune needs [bright_cyan]-m[/], [bright_cyan]-ot[/]/"
-                      "[bright_cyan]-nt[/], or [bright_cyan]-r[/] — refusing to remove everything")
+                      "[bright_cyan]-nt[/], [bright_cyan]-ct[/] or [bright_cyan]-r[/] — "
+                      "refusing to remove everything")
         return 2
-    entries = _load()
-    rows = select(entries, filters, rules, union=True)
-    if not rows:
-        if not a.quiet:
-            console.print("[bold bright_green]✓ Nothing to remove.[/]")
+    if a.quick_only and not filters.patterns and rules is None:
+        console.print("[bold red]✗[/] [bright_cyan]-qo[/] needs [bright_cyan]-m[/] or "
+                      "[bright_cyan]-r[/]: Quick access has no ages or categories")
+        return 2
+    rc = 0
+    if not a.quick_only:
+        rc = max(rc, _prune_recent(a, filters, rules))
+    if a.quick or a.quick_only:
+        rc = max(rc, _prune_quick(a, filters, rules))
+    if a.yes and not a.quiet:
+        console.print(f"[grey50]log: {LOG_FILE}[/]")
+    return rc
+
+
+def cmd_quick(a: argparse.Namespace) -> int:
+    rules = _rules(a)
+    patterns = [_unquote(p) for p in a.match or []]
+    with console.status("[bright_magenta]Reading Quick access…[/]", spinner="dots"):
+        items = quick.load()
+    rows = []
+    for it in items:
+        if a.pinned_only and not it.pinned or a.frequent_only and it.pinned:
+            continue
+        why = quick.reason(it, patterns, rules) if (patterns or rules) else ""
+        if (patterns or rules) and not why:
+            continue
+        rows.append((it, why or ""))
+    if a.json:
+        print(json.dumps([dict(it.as_dict(), why=w) for it, w in rows], indent=2))
         return 0
-    if not a.yes:
-        console.print(_table(rows, show_reason=True, title="Would remove"))
-        console.print(Panel(
-            f"[bold gold1]DRY RUN[/] — would remove [bold deep_pink2]{len(rows)}[/] of "
-            f"[bold]{len(entries)}[/] entries. Add [bold bright_cyan]-y[/] to do it.",
-            border_style="gold1", expand=False))
-        return 0
-    removed = failed = 0
-    for e, why in rows:
-        try:
-            store.remove(e)
-            _log(e, why)
-            removed += 1
-        except OSError as exc:
-            failed += 1
-            console.print(f"[bold red]✗[/] could not remove [bright_cyan]{e.lnk.name}[/]: {exc}")
-    if not a.quiet or failed:
-        msg = f"[bold bright_green]✓ Removed {removed}[/] of {len(entries)} entries"
-        if failed:
-            msg += f", [bold red]{failed} failed[/]"
-        console.print(msg + f"\n[grey50]log: {LOG_FILE}[/]")
-    return 1 if failed else 0
+    console.print(_quick_table(rows, title="Quick access", show_reason=bool(patterns or rules)))
+    pinned = sum(it.pinned for it in items)
+    console.print(
+        f"[bold bright_magenta]{len(rows)}[/] of [bold]{len(items)}[/] folders · "
+        f"[gold1]📌 {pinned} pinned[/] · [bright_cyan]⟳ {len(items) - pinned} frequent[/] "
+        "[grey50](Windows picks these; removing one promotes the next)[/]")
+    return 0
 
 
 # ---------------------------------------------------------------- present
@@ -373,7 +486,10 @@ def show_overview() -> None:
     cmds.add_row("list", "show entries newest first, [bright_yellow]●[/] = visible in Home "
                  "[grey50](alias: dump)[/]")
     cmds.add_row("stats", "counts by kind, category, extension, root dir, age, month")
-    cmds.add_row("prune", "remove entries — [bold gold1]dry run[/] unless [bright_cyan]-y[/]")
+    cmds.add_row("quick", "show [bold gold1]Quick access[/] folders: 📌 pinned and ⟳ frequent")
+    cmds.add_row("prune", "remove entries — [bold gold1]dry run[/] unless [bright_cyan]-y[/]; "
+                 "[bright_cyan]-qa[/] also Quick access, [bright_cyan]-qo[/] only Quick access, "
+                 "[bright_cyan]-ip[/] unpin too")
     cmds.add_row("present", "[gold1]on[/] hides Recent for screen sharing, "
                  "[bright_green]off[/] restores, no argument = status")
     cmds.add_row("help", "this page; [bright_cyan]help <command>[/] for its options")
@@ -491,7 +607,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_selectors(p)
     p.add_argument("-y", "--yes", action="store_true", help="really remove")
     p.add_argument("-q", "--quiet", action="store_true", help="print only failures")
+    g = p.add_argument_group("quick access")
+    g.add_argument("-qa", "--quick", action="store_true",
+                   help="also remove matching Quick access folders (-m patterns and the rules' "
+                   "private list; ages and categories don't apply there)")
+    g.add_argument("-qo", "--quick-only", action="store_true",
+                   help="only Quick access; leave the Recent list alone")
+    g.add_argument("-ip", "--include-pinned", action="store_true",
+                   help="with -qa/-qo: also unpin matching pinned folders")
     p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser("quick", help="show Quick access folders (pinned + frequent)",
+                       description="Show the Quick access folders on Explorer's Home page. "
+                       "Remove them with `recentctl prune -qa` or `-qo`.",
+                       formatter_class=fmt, epilog=EPILOG)
+    p.add_argument("-m", "--match", action="append", metavar="PAT",
+                   help="only folders matching; repeat for OR")
+    p.add_argument("-r", "--rules", action="store_true",
+                   help="only folders the rules file's private list selects")
+    p.add_argument("-rf", "--rules-file", metavar="PATH",
+                   help=f"rules file (default {DEFAULT_RULES})")
+    p.add_argument("-pi", "--pinned-only", action="store_true", help="only pinned folders")
+    p.add_argument("-fo", "--frequent-only", action="store_true",
+                   help="only the frequent folders Windows added")
+    p.add_argument("-j", "--json", action="store_true", help="JSON instead of a table")
+    p.set_defaults(func=cmd_quick)
 
     p = sub.add_parser("present", help="hide/show the Recent section for screen sharing",
                        description="Hide or show Explorer Home's Recent section. History is "

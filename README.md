@@ -113,6 +113,28 @@ recentctl prune -ct video -y          # every video, whatever its age
 `-m`, `-ot`, `-nt` and `-ct` each count as a selector. `-k` on its own doesn't, because
 `prune -k file` would empty almost the whole list.
 
+### `quick` and `prune -qa` — Quick access folders
+
+The folders in Quick access (the ones you pinned, plus "frequent" ones Windows adds) are a
+**separate list** from Recent files, stored elsewhere, so pruning Recent doesn't touch them.
+
+```powershell
+recentctl quick                       # 📌 pinned and ⟳ frequent folders
+recentctl quick -m *\Private\*        # only matching folders
+recentctl prune -m *\Private\* -qa    # Recent AND Quick access (dry run)
+recentctl prune -m *\Private\* -qo -y # Quick access only, for real
+recentctl prune -r -qa -y             # rules file's `private` list, both lists
+```
+
+- Quick access takes `-m` patterns and the rules file's `private`/`keep` lists. It has no
+  last-opened time, so ages, `max_age` and categories don't apply there.
+- **Pinned folders are kept** and reported unless you add `-ip` (`--include-pinned`), which
+  unpins them.
+- When a frequent folder is removed, Windows promotes the next one into the free slot. With
+  `-y`, recentctl repeats until no matching folder is left.
+- It uses Explorer's own "Remove from Quick access" / "Unpin from Quick access" commands,
+  matched by their English names.
+
 ### `present` — the screen-sharing switch
 
 ```powershell

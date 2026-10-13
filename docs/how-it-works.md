@@ -32,6 +32,15 @@ These were tested with dummy files added through `SHAddToRecentDocs`:
 the file-attribute field of the `.lnk` header. Neither touches the target, so shortcuts to
 an offline network share don't stall it.
 
+## Quick access folders
+
+Quick access (shell folder `shell:::{3936E9E4-D92C-4EEE-A85A-BC16D5EA0819}`) is a separate
+list backed by `f01b4d95cf55d32a.automaticDestinations-ms`. Here the shell verbs **do**
+work from a script: "Remove from Quick access" for frequent folders and "Unpin from Quick
+access" for pinned ones. A pinned folder offers the second verb, a frequent one the first,
+which is how `recentctl quick` tells them apart. Removing a frequent folder makes Windows
+promote the next most-used folder into the free slot.
+
 ## Hiding the section
 
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer` holds `ShowRecent` and
