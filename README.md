@@ -13,7 +13,9 @@ scrolls up to take its place. Checking it before every call is slow and never ce
 - **see** the whole history, not just the 20 entries Home shows, with the visible ones marked;
 - **count** it by kind, file type, folder, age or month;
 - **prune** it with patterns, age limits and a rules file — dry run by default;
-- **hide** the Recent section with one command before a call, and bring it back afterwards.
+- **hide** the Recent section with one command before a call, and bring it back afterwards;
+- prune the **Quick access** folders and the recent lists of **Office and VLC** the same way,
+  and run it all **at every logon**.
 
 It only removes entries from the list. **Your files, pinned folders and favourites are never
 touched.**
@@ -135,6 +137,44 @@ recentctl prune -r -qa -y             # rules file's `private` list, both lists
 - It uses Explorer's own "Remove from Quick access" / "Unpin from Quick access" commands,
   matched by their English names.
 
+### `apps` and `prune -ap` — Office and VLC recent lists
+
+Applications keep their own recently-used lists, separate from Explorer's, so pruning
+Explorer leaves them alone. `recentctl` reads and prunes these:
+
+| App | What | Where |
+|---|---|---|
+| Word, Excel, PowerPoint (also Access, Visio, Publisher, OneNote, Project) | recent files and recent folders ("places") on the *Open* page | `HKCU\Software\Microsoft\Office\16.0\<App>\User MRU\…\File MRU` / `Place MRU` |
+| VLC | *Media → Open Recent Media* | `%APPDATA%\vlc\vlc-qt-interface.ini`, `[RecentsMRL]` |
+
+```powershell
+recentctl apps                          # every item, per app; ⏵ = app is running
+recentctl apps -r                       # what the rules file selects
+recentctl prune -r -ap                  # DRY RUN: Recent + application lists
+recentctl prune -r -al -y               # everything: Recent, Quick access, applications
+recentctl prune -m '*\Private\*' -ao -an vlc -y   # VLC only
+```
+
+- An app rewrites its list when it exits, so **a running app is skipped** (and said so). Close
+  it and run again.
+- The same `-m`, `-ct`, `-k` and rules apply. VLC keeps no dates, so age options never select
+  its items.
+- Removed Office items are renumbered so the list stays contiguous.
+
+### `logon` — prune at every logon
+
+```powershell
+recentctl logon on                      # runs "prune -r -al -y" at every logon
+recentctl logon on -x "prune -r -ap -y" # ...or your own arguments
+recentctl logon                         # status, with the output of the last run
+recentctl logon off                     # remove it
+```
+
+This puts a shortcut in your Startup folder pointing at `recentctlw.exe`, the windowless
+build of the same command, so no admin rights are needed and nothing flashes on screen. At
+logon no Office app or VLC is open yet, so their lists can be edited. The output of the last
+run is kept in `%LOCALAPPDATA%\recentctl\last-run.txt`.
+
 ### `present` — the screen-sharing switch
 
 ```powershell
@@ -203,8 +243,8 @@ keep = [                               # never goes — beats everything else
 
 Check what it selects with `recentctl list -r`, then apply it with `recentctl prune -r -y`.
 
-Running that on a schedule keeps the list clean without thinking about it. For example, Task
-Scheduler can run `recentctl prune -r -y -q` at logon and every 15 minutes.
+To run it at every logon, across Recent, Quick access and the application lists, use
+`recentctl logon on` (see above).
 
 ## How it works
 
@@ -216,8 +256,11 @@ last opened. Details, and what was tried and rejected, are in
 
 ### Not covered
 
-- **Taskbar jump lists** (right-click an app's taskbar icon) keep their own history in
-  `AutomaticDestinations`. They are binary compound files and are left alone.
+- **Taskbar jump lists** (right-click an app's taskbar icon, e.g. VLC's or Word's) keep their
+  own history in `AutomaticDestinations`. They are binary compound files and are left alone
+  for now.
+- **Office's cloud list:** Office signed in to a Microsoft account also shows documents
+  from OneDrive/SharePoint, which come from the account, not this PC.
 - **Office.com / OneDrive recents** come from your Microsoft account, not this PC. Turn off
   *Folder Options → Show files from Office.com* if they appear.
 

@@ -95,6 +95,8 @@ class Filters:
             return False
         if self.patterns and not any(matches(p, entry) for p in self.patterns):
             return False
+        if (self.older_than or self.newer_than) and getattr(entry, "opened", 0) is None:
+            return False  # undated (VLC keeps no times): an age can't select it
         if self.older_than is not None and entry.age <= self.older_than:
             return False
         if self.newer_than is not None and entry.age >= self.newer_than:

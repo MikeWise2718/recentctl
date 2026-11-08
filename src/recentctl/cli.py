@@ -17,11 +17,12 @@ from rich.table import Table
 from rich.text import Text
 from rich_argparse import RawDescriptionRichHelpFormatter
 
-from . import __version__, quick, stats, store, switch, view
+from . import __version__, apps, logon, quick, stats, store, switch, view
 from .rules import DEFAULT_RULES, Filters, Rules, parse_age, select
 
 console = Console(highlight=False)
 LOG_FILE = Path(os.environ["LOCALAPPDATA"]) / "recentctl" / "events.jsonl"
+LAST_RUN = LOG_FILE.parent / "last-run.txt"  # output of a windowless (recentctlw) run
 
 RawDescriptionRichHelpFormatter.styles.update({
     "argparse.prog": "bold bright_magenta",
@@ -49,6 +50,10 @@ EXAMPLES = [
     ("recentctl quick", "Quick access folders, pinned and frequent"),
     ("recentctl prune -m *\\Private\\* -qa -y", "remove from Recent AND Quick access"),
     ("recentctl prune -m *\\Private\\* -qo -ip -y", "Quick access only, unpinning too"),
+    ("recentctl apps", "Office and VLC recent lists (⏵ = app running, skipped)"),
+    ("recentctl prune -r -al", "DRY RUN: the rules against Recent, Quick access and apps"),
+    ("recentctl prune -m *\\Private\\* -ao -an vlc -y", "VLC's recent media only"),
+    ("recentctl logon on", "run `prune -r -al -y` at every logon"),
     ("recentctl present on -f", "hide Recent + frequent folders for a screen share"),
     ("recentctl present off", "show them again"),
 ]
@@ -394,9 +399,116 @@ def _prune_quick(a: argparse.Namespace, filters: Filters, rules: Rules | None) -
     return 1 if failed else 0
 
 
+APP_STYLE = {"word": "bold dodger_blue1", "excel": "bold green3", "powerpoint": "bold orange_red1",
+             "vlc": "bold dark_orange", "access": "bold red3", "visio": "bold blue_violet",
+             "publisher": "bold sea_green3", "onenote": "bold medium_purple",
+             "project": "bold green4"}
+
+
+def _apps_table(rows: list[tuple[apps.AppItem, str]], title: str = "",
+                show_reason: bool = True, running: set[str] | frozenset = frozenset()) -> Table:
+    t = Table(box=box.ROUNDED, header_style="bold white on dark_green", border_style="green",
+              title=title or None, title_style="bold bright_magenta", pad_edge=False)
+    t.add_column("app", no_wrap=True)
+    t.add_column("list", no_wrap=True, style="grey62")
+    t.add_column("opened", no_wrap=True, style="grey62")
+    t.add_column("age", justify="right", no_wrap=True)
+    t.add_column("name", overflow="fold")
+    t.add_column("target", overflow="fold")
+    if show_reason:
+        t.add_column("why", overflow="fold", style="bold deep_pink2")
+    for it, why in rows:
+        app = Text(it.app, style=APP_STYLE.get(it.app, "white"))
+        if it.app in running:
+            app.append(" ⏵", style="bold red")
+        cells = [
+            app, it.list,
+            view.stamp(it.opened) if it.opened else Text("—", style="grey35"),
+            view.age_cell(it) if it.opened else Text("—", style="grey35"),
+            view.name_cell(it), view.target_cell(it),
+        ]
+        if show_reason:
+            cells.append(why)
+        t.add_row(*cells)
+    return t
+
+
+def _load_apps(names: list[str] | None) -> apps.Report:
+    with console.status("[green3]Reading application lists…[/]", spinner="dots"):
+        return apps.load(names)
+
+
+def _running_note(running: set[str]) -> None:
+    if running:
+        console.print(
+            f"[bold red]⏵ running:[/] [bold]{', '.join(sorted(running))}[/] [grey50]— an app "
+            "rewrites its list when it exits, so its entries are skipped; close it and run "
+            "again.[/]")
+
+
+def cmd_apps(a: argparse.Namespace) -> int:
+    filters = _filters(a)
+    rules = _rules(a)
+    rep = _load_apps(a.app)
+    rows = select(rep.items, filters, rules, union=False)
+    if a.limit:
+        rows = rows[: a.limit]
+    if a.json:
+        print(json.dumps([dict(it.as_dict(), why=w) for it, w in rows], indent=2,
+                         ensure_ascii=False))
+        return 0
+    console.print(_apps_table(rows, title="Application recent lists",
+                              show_reason=rules is not None, running=rep.running))
+    per = {}
+    for it in rep.items:
+        per[it.app] = per.get(it.app, 0) + 1
+    console.print(f"[bold bright_magenta]{len(rows)}[/] of [bold]{len(rep.items)}[/] items · "
+                  + " · ".join(f"[{APP_STYLE.get(k, 'white')}]{k} {n}[/]"
+                               for k, n in sorted(per.items())))
+    _running_note(rep.running)
+    return 0
+
+
+def _prune_apps(a: argparse.Namespace, filters: Filters, rules: Rules | None) -> int:
+    rep = _load_apps(a.app)
+    rows = select(rep.items, filters, rules, union=True)
+    blocked = [(it, w) for it, w in rows if it.app in rep.running]
+    rows = [(it, w) for it, w in rows if it.app not in rep.running]
+    if blocked:
+        console.print(f"[bold red]⏵[/] {len(blocked)} matching item(s) in "
+                      f"[bold]{', '.join(sorted({it.app for it, _ in blocked}))}[/] skipped: "
+                      "the app is running and would write them back when it exits.")
+    if not rows:
+        if not a.quiet:
+            console.print("[bold bright_green]✓ Applications: nothing to remove.[/]")
+        return 1 if blocked and a.yes else 0
+    if not a.yes:
+        console.print(_apps_table(rows, title="Applications — would remove"))
+        console.print(Panel(
+            f"[bold gold1]DRY RUN[/] — would remove [bold deep_pink2]{len(rows)}[/] of "
+            f"[bold]{len(rep.items)}[/] application list items. Add "
+            "[bold bright_cyan]-y[/] to do it.", border_style="gold1", expand=False))
+        return 0
+    try:
+        counts = apps.remove([it for it, _ in rows])
+    except OSError as exc:
+        console.print(f"[bold red]✗[/] could not edit an application list: {exc}")
+        return 1
+    for it, why in rows:
+        _log(f"app.{it.app}.removed", it.name, why, it.as_dict())
+    if not a.quiet:
+        console.print("[bold bright_green]✓ Applications: removed[/] " + ", ".join(
+            f"[{APP_STYLE.get(k, 'white')}]{k} {n}[/]" for k, n in sorted(counts.items())))
+    return 1 if blocked else 0
+
+
 def cmd_prune(a: argparse.Namespace) -> int:
     filters = _filters(a)
     rules = _rules(a)
+    if a.all:
+        a.quick = a.apps = True
+    if a.app:
+        a.apps = True
     if not filters.selects_anything and rules is None:
         console.print("[bold red]✗[/] prune needs [bright_cyan]-m[/], [bright_cyan]-ot[/]/"
                       "[bright_cyan]-nt[/], [bright_cyan]-ct[/] or [bright_cyan]-r[/] — "
@@ -407,10 +519,12 @@ def cmd_prune(a: argparse.Namespace) -> int:
                       "[bright_cyan]-r[/]: Quick access has no ages or categories")
         return 2
     rc = 0
-    if not a.quick_only:
+    if not (a.quick_only or a.apps_only):
         rc = max(rc, _prune_recent(a, filters, rules))
-    if a.quick or a.quick_only:
+    if (a.quick or a.quick_only) and not a.apps_only:
         rc = max(rc, _prune_quick(a, filters, rules))
+    if (a.apps or a.apps_only) and not a.quick_only:
+        rc = max(rc, _prune_apps(a, filters, rules))
     if a.yes and not a.quiet:
         console.print(f"[grey50]log: {LOG_FILE}[/]")
     return rc
@@ -470,6 +584,42 @@ def cmd_present(a: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- logon
+
+def cmd_logon(a: argparse.Namespace) -> int:
+    if a.state == "on":
+        try:
+            path = logon.install(a.args)
+        except FileNotFoundError as exc:
+            console.print(f"[bold red]✗[/] {exc}")
+            return 2
+        console.print(f"[bold bright_green]✓ At every logon:[/] [bold]recentctl {a.args}[/]\n"
+                      f"[grey50]shortcut {path}; output of the last run → {LAST_RUN}[/]")
+        if "-y" not in a.args.split():
+            console.print("[gold1]Note: without -y the logon run is only a dry run.[/]")
+        return 0
+    if a.state == "off":
+        gone = logon.remove()
+        console.print("[bold bright_green]✓ Removed[/] the logon run." if gone
+                      else "[grey50]No logon run was installed.[/]")
+        return 0
+    st = logon.status()
+    if st is None:
+        console.print("[grey50]No logon run installed.[/] "
+                      "[bright_cyan]recentctl logon on[/] adds one.")
+        return 0
+    target, args = st
+    console.print(Panel(
+        f"[bold]recentctl {args}[/]\n[grey50]{target}\n{logon.SHORTCUT}[/]",
+        title="[bold black on bright_green] runs at logon [/]", border_style="bright_green",
+        expand=False))
+    if LAST_RUN.exists():
+        when = view.stamp(datetime.fromtimestamp(LAST_RUN.stat().st_mtime))
+        console.print(f"[grey50]last run {when}:[/]")
+        console.print(Text(LAST_RUN.read_text(encoding="utf-8", errors="replace").strip()))
+    return 0
+
+
 # ---------------------------------------------------------------- help
 
 def show_overview() -> None:
@@ -490,6 +640,11 @@ def show_overview() -> None:
     cmds.add_row("prune", "remove entries — [bold gold1]dry run[/] unless [bright_cyan]-y[/]; "
                  "[bright_cyan]-qa[/] also Quick access, [bright_cyan]-qo[/] only Quick access, "
                  "[bright_cyan]-ip[/] unpin too")
+    cmds.add_row("apps", "show [bold green3]application lists[/]: Word, Excel, PowerPoint "
+                 "(files + folders) and VLC; prune them with [bright_cyan]-ap[/] / "
+                 "[bright_cyan]-ao[/], everything with [bright_cyan]-al[/]")
+    cmds.add_row("logon", "[gold1]on[/] runs [bright_cyan]prune -r -al -y[/] at every logon "
+                 "(Startup shortcut, no window), [bright_green]off[/] removes it")
     cmds.add_row("present", "[gold1]on[/] hides Recent for screen sharing, "
                  "[bright_green]off[/] restores, no argument = status")
     cmds.add_row("help", "this page; [bright_cyan]help <command>[/] for its options")
@@ -615,7 +770,38 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only Quick access; leave the Recent list alone")
     g.add_argument("-ip", "--include-pinned", action="store_true",
                    help="with -qa/-qo: also unpin matching pinned folders")
+    g = p.add_argument_group("application lists (Office, VLC)")
+    g.add_argument("-ap", "--apps", action="store_true",
+                   help="also remove matching items from application lists")
+    g.add_argument("-ao", "--apps-only", action="store_true",
+                   help="only application lists; leave Recent and Quick access alone")
+    g.add_argument("-an", "--app", action="append", choices=apps.APPS, metavar="APP",
+                   help="only this app (implies -ap); repeatable: " + ", ".join(apps.APPS))
+    g.add_argument("-al", "--all", action="store_true",
+                   help="everything: Recent, Quick access and application lists")
     p.set_defaults(func=cmd_prune)
+
+    p = sub.add_parser("apps", help="show application recent lists (Office, VLC)",
+                       description="Show the recently-used lists Office and VLC keep for "
+                       "themselves. Remove items with `recentctl prune -ap` or `-ao`. "
+                       "⏵ marks an app that is running (its list can't be edited until it "
+                       "exits).", formatter_class=fmt, epilog=EPILOG)
+    _add_selectors(p)
+    p.add_argument("-an", "--app", action="append", choices=apps.APPS, metavar="APP",
+                   help="only this app; repeatable: " + ", ".join(apps.APPS))
+    p.add_argument("-l", "--limit", type=int, metavar="N", help="at most N rows")
+    p.add_argument("-j", "--json", action="store_true", help="JSON instead of a table")
+    p.set_defaults(func=cmd_apps)
+
+    p = sub.add_parser("logon", help="run a prune at every logon (on/off/status)",
+                       description="Add or remove a Startup-folder shortcut that runs "
+                       "recentctl windowlessly at every logon. No admin rights needed.",
+                       formatter_class=fmt, epilog=EPILOG)
+    p.add_argument("state", choices=["on", "off", "status"], nargs="?", default="status",
+                   help="on = install, off = remove, status = show it and the last run")
+    p.add_argument("-x", "--args", default=logon.DEFAULT_ARGS, metavar="ARGS",
+                   help=f'what to run (default "{logon.DEFAULT_ARGS}")')
+    p.set_defaults(func=cmd_logon)
 
     p = sub.add_parser("quick", help="show Quick access folders (pinned + frequent)",
                        description="Show the Quick access folders on Explorer's Home page. "
@@ -652,6 +838,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.stdout is None:  # recentctlw (no console): keep the output of the last run
+        LAST_RUN.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(LAST_RUN, "w", encoding="utf-8")  # noqa: SIM115
+        console.print(f"[grey50]{view.stamp(datetime.now())} recentctl "
+                      f"{' '.join(argv if argv is not None else sys.argv[1:])}[/]")
     a = build_parser().parse_args(argv)
     if not getattr(a, "func", None):
         show_overview()

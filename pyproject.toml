@@ -28,6 +28,9 @@ Issues = "https://github.com/MikeWise2718/recentctl/issues"
 [project.scripts]
 recentctl = "recentctl.cli:main"
 
+[project.gui-scripts]
+recentctlw = "recentctl.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8"]
 
